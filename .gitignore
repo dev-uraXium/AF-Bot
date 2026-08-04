@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Environment files
+.env
+.env.*
+
+# Logs
+npm-debug.log*
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local data and runtime artifacts
+data/store.json
+*.local
