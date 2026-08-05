@@ -1,160 +1,123 @@
-// commands/flight.js  —  /flight add   /flight remove
-const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
-const { getFlights, league, isStaff, errorEmbed, successEmbed } = require("../utils/helpers");
+// commands/flight.js — /flight add | remove
+const { SlashCommandBuilder } = require("discord.js");
 const { db, save } = require("../data/db");
+const config        = require("../config");
+const { getFlights, league, isStaff, FLEET_CHOICES, AIRPORT_CHOICES, money } = require("../utils/helpers");
+const { COLORS, text, separator, container, componentsPayload } = require("../utils/components");
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("flight")
     .setDescription("Staff flight management.")
-
-    // ── /flight add ─────────────────────────────────────────
     .addSubcommand(sub =>
-      sub.setName("add")
-        .setDescription("Manually add a flight for a pilot. (Staff only)")
+      sub.setName("add").setDescription("Manually add a flight. (Staff only)")
         .addUserOption(o => o.setName("pilot").setDescription("Pilot to credit").setRequired(true))
-        .addStringOption(o => o.setName("callsign").setDescription("Flight callsign (e.g. AF001)").setRequired(true))
-        .addStringOption(o => o.setName("aircraft").setDescription("Aircraft type").setRequired(true))
-        .addStringOption(o => o.setName("departure").setDescription("ICAO departure").setRequired(true))
-        .addStringOption(o => o.setName("arrival").setDescription("ICAO arrival").setRequired(true))
-        .addStringOption(o => o.setName("route").setDescription("Filed route").setRequired(true))
-        .addStringOption(o => o.setName("reason").setDescription("Reason for manual addition").setRequired(false)))
-
-    // ── /flight remove ───────────────────────────────────────
+        .addStringOption(o => o.setName("callsign").setDescription("Flight callsign").setRequired(true))
+        .addStringOption(o => o.setName("aircraft").setDescription("Aircraft").setRequired(true).addChoices(...FLEET_CHOICES))
+        .addStringOption(o => o.setName("departure").setDescription("Departure airport").setRequired(true).addChoices(...AIRPORT_CHOICES))
+        .addStringOption(o => o.setName("arrival").setDescription("Arrival airport").setRequired(true).addChoices(...AIRPORT_CHOICES))
+        .addStringOption(o => o.setName("route").setDescription("Waypoints").setRequired(true))
+        .addStringOption(o => o.setName("reason").setDescription("Reason").setRequired(false)))
     .addSubcommand(sub =>
-      sub.setName("remove")
-        .setDescription("Remove a logged flight from a pilot. (Staff only)")
-        .addUserOption(o => o.setName("pilot").setDescription("Pilot whose flight to remove").setRequired(true))
-        .addIntegerOption(o =>
-          o.setName("index")
-            .setDescription("Flight number to remove — use /stats to see the list")
-            .setRequired(true)
-            .setMinValue(1))),
+      sub.setName("remove").setDescription("Remove a logged flight. (Staff only)")
+        .addUserOption(o => o.setName("pilot").setDescription("Pilot").setRequired(true))
+        .addIntegerOption(o => o.setName("index").setDescription("Flight number (from /stats)").setRequired(true).setMinValue(1))),
 
   async execute(interaction) {
-    if (!isStaff(interaction.member)) {
-      return interaction.reply({ embeds: [errorEmbed("You need the Staff role to use this command.")], ephemeral: true });
-    }
+    const emoji = config.EMOJI;
+
+    if (!isStaff(interaction.member))
+      return interaction.reply(componentsPayload(
+        [container(COLORS.RED).addTextDisplayComponents(text(`${emoji.NO.tag} Staff only.`))],
+        { ephemeral: true }
+      ));
 
     const sub    = interaction.options.getSubcommand();
     const target = interaction.options.getUser("pilot");
 
-    // ── ADD ──────────────────────────────────────────────────
     if (sub === "add") {
       const callsign  = interaction.options.getString("callsign").toUpperCase();
       const aircraft  = interaction.options.getString("aircraft");
-      const departure = interaction.options.getString("departure").toUpperCase();
-      const arrival   = interaction.options.getString("arrival").toUpperCase();
+      const departure = interaction.options.getString("departure");
+      const arrival   = interaction.options.getString("arrival");
       const route     = interaction.options.getString("route");
       const reason    = interaction.options.getString("reason") ?? "Manually added by staff";
 
       const flights = getFlights(target.id);
-      flights.push({
-        callsign, aircraft, departure, arrival, route,
-        proofUrl: null,
-        timestamp: new Date().toISOString(),
-        addedBy: interaction.user.id,
-        reason,
-      });
+      flights.push({ callsign, aircraft, departure, arrival, route, proofUrl: null, timestamp: new Date().toISOString(), addedBy: interaction.user.id, reason });
       save(db);
 
       const total = flights.length;
-      const lg    = league(total);
+      const rank  = league(total);
 
-      const embed = new EmbedBuilder()
-        .setTitle("✅ Flight Added by Staff")
-        .setColor(lg.color)
-        .setThumbnail(target.displayAvatarURL())
-        .addFields(
-          { name: "👤 Pilot",      value: `<@${target.id}>`,              inline: true },
-          { name: "🛡️ Added By",   value: `<@${interaction.user.id}>`,    inline: true },
-          { name: "📡 Callsign",   value: callsign,                        inline: true },
-          { name: "✈️ Aircraft",   value: aircraft,                        inline: true },
-          { name: "🛫 Departure",  value: departure,                       inline: true },
-          { name: "🛬 Arrival",    value: arrival,                         inline: true },
-          { name: "🗺️ Route",      value: `\`${route}\``,                 inline: false },
-          { name: "📝 Reason",     value: reason,                          inline: false },
-          { name: "📊 New Total",  value: `${total} flights — ${lg.name}`, inline: false },
-        )
-        .setFooter({ text: `Flight #${total} • Manual Entry` })
-        .setTimestamp();
+      const panel = container(rank.color)
+        .addTextDisplayComponents(text(`${emoji.PLANE.tag} **Flight Added by Staff**`))
+        .addSeparatorComponents(separator())
+        .addTextDisplayComponents(text(
+          `**Pilot**: <@${target.id}>\n` +
+          `**Added By**: <@${interaction.user.id}>\n` +
+          `**Callsign**: ${callsign}\n` +
+          `**Aircraft**: ${aircraft}\n` +
+          `**Route**: ${departure} ${emoji.ROUTE.tag} ${arrival}\n` +
+          `**Waypoints**: \`${route}\`\n` +
+          `**Reason**: ${reason}\n` +
+          `**New Total**: ${total} flights — ${rank.name}`
+        ));
 
-      await interaction.reply({ embeds: [embed] });
+      await interaction.reply(componentsPayload([panel]));
 
-      // DM the pilot
-      target.send({
-        embeds: [
-          new EmbedBuilder()
-            .setTitle("✅ A Flight Has Been Added to Your Log")
-            .setColor(lg.color)
-            .addFields(
-              { name: "Callsign",   value: callsign,  inline: true },
-              { name: "Aircraft",   value: aircraft,  inline: true },
-              { name: "Route",      value: `${departure} → ${arrival}`, inline: false },
-              { name: "Total Now",  value: `${total} flights — ${lg.name}`, inline: false },
-              { name: "Reason",     value: reason, inline: false },
-            )
-            .setFooter({ text: "AFBot • Virtual Airline" })
-            .setTimestamp()
-        ]
-      }).catch(() => {});
+      target.send(componentsPayload([
+        container(rank.color)
+          .addTextDisplayComponents(text(`${emoji.PLANE.tag} **Flight Added to Your Log**`))
+          .addSeparatorComponents(separator())
+          .addTextDisplayComponents(text(
+            `**Callsign**: ${callsign}\n**Aircraft**: ${aircraft}\n**Route**: ${departure} ${emoji.ROUTE.tag} ${arrival}\n` +
+            `**New Total**: ${total} flights — ${rank.name}\n**Reason**: ${reason}`
+          ))
+      ])).catch(() => {});
       return;
     }
 
-    // ── REMOVE ───────────────────────────────────────────────
     if (sub === "remove") {
-      const idx     = interaction.options.getInteger("index") - 1; // convert to 0-based
+      const idx     = interaction.options.getInteger("index") - 1;
       const flights = getFlights(target.id);
 
-      if (flights.length === 0) {
-        return interaction.reply({ embeds: [errorEmbed(`<@${target.id}> has no logged flights.`)], ephemeral: true });
-      }
-      if (idx < 0 || idx >= flights.length) {
-        return interaction.reply({
-          embeds: [errorEmbed(`Invalid flight index. <@${target.id}> has **${flights.length}** flight(s).`)],
-          ephemeral: true,
-        });
-      }
+      if (!flights.length)
+        return interaction.reply(componentsPayload(
+          [container(COLORS.RED).addTextDisplayComponents(text(`${emoji.NO.tag} <@${target.id}> has no logged flights.`))],
+          { ephemeral: true }
+        ));
+      if (idx < 0 || idx >= flights.length)
+        return interaction.reply(componentsPayload(
+          [container(COLORS.RED).addTextDisplayComponents(text(`${emoji.NO.tag} Invalid index. <@${target.id}> has **${flights.length}** flight(s).`))],
+          { ephemeral: true }
+        ));
 
       const removed = flights.splice(idx, 1)[0];
       save(db);
+      const rank = league(flights.length);
 
-      const total = flights.length;
-      const lg    = league(total);
+      const panel = container(COLORS.RED)
+        .addTextDisplayComponents(text(`${emoji.TRASH.tag} **Flight Removed**`))
+        .addSeparatorComponents(separator())
+        .addTextDisplayComponents(text(
+          `**Pilot**: <@${target.id}>\n**Removed By**: <@${interaction.user.id}>\n` +
+          `**Callsign**: ${removed.callsign}\n**Aircraft**: ${removed.aircraft}\n` +
+          `**Route**: ${removed.departure} ${emoji.ROUTE.tag} ${removed.arrival}\n` +
+          `**New Total**: ${flights.length} flights — ${rank.name}`
+        ));
 
-      const embed = new EmbedBuilder()
-        .setTitle("🗑️ Flight Removed")
-        .setColor(0xff4444)
-        .setThumbnail(target.displayAvatarURL())
-        .addFields(
-          { name: "👤 Pilot",      value: `<@${target.id}>`,           inline: true },
-          { name: "🛡️ Removed By", value: `<@${interaction.user.id}>`, inline: true },
-          { name: "📡 Callsign",   value: removed.callsign,            inline: true },
-          { name: "✈️ Aircraft",   value: removed.aircraft,            inline: true },
-          { name: "🛫 Route",      value: `${removed.departure} → ${removed.arrival}`, inline: true },
-          { name: "📊 New Total",  value: `${total} flights — ${lg.name}`, inline: false },
-        )
-        .setFooter({ text: "Flight removed from the log" })
-        .setTimestamp();
+      await interaction.reply(componentsPayload([panel]));
 
-      await interaction.reply({ embeds: [embed] });
-
-      // DM the pilot
-      target.send({
-        embeds: [
-          new EmbedBuilder()
-            .setTitle("⚠️ A Flight Has Been Removed from Your Log")
-            .setColor(0xff8c00)
-            .addFields(
-              { name: "Callsign",  value: removed.callsign, inline: true },
-              { name: "Route",     value: `${removed.departure} → ${removed.arrival}`, inline: false },
-              { name: "New Total", value: `${total} flights — ${lg.name}`, inline: false },
-            )
-            .setFooter({ text: "AFBot • Virtual Airline — Contact staff if this was a mistake" })
-            .setTimestamp()
-        ]
-      }).catch(() => {});
-      return;
+      target.send(componentsPayload([
+        container(COLORS.ORANGE)
+          .addTextDisplayComponents(text(`${emoji.WARNING.tag} **Flight Removed from Your Log**`))
+          .addSeparatorComponents(separator())
+          .addTextDisplayComponents(text(
+            `**Callsign**: ${removed.callsign}\n**Route**: ${removed.departure} ${emoji.ROUTE.tag} ${removed.arrival}\n` +
+            `**New Total**: ${flights.length} flights — ${rank.name}\n\n-# Contact staff if this was a mistake`
+          ))
+      ])).catch(() => {});
     }
   },
 };

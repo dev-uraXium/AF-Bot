@@ -1,383 +1,456 @@
-// commands/contracts.js — Contract System
-// /contract list | claim | unclaim | complete | create | delete | info | active
-const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
+// commands/contracts.js
+const { SlashCommandBuilder, ButtonStyle } = require("discord.js");
 const { db, save } = require("../data/db");
+const config        = require("../config");
 const {
-  isStaff, errorEmbed, addBalance, logTx,
-  CURRENCY, CURRENCY_ICON, FLEET_KEYS, FLEET_CHOICES,
-  genId, contractMatchesFlight,
+  isStaff, addBalance, logTx, CURRENCY, FLEET_KEYS, genId, TIERS, hasTier, AIRPORT_CHOICES,
 } = require("../utils/helpers");
+const { COLORS, text, separator, container, button, row, componentsPayload } = require("../utils/components");
 
-const DIFF_COLOR = { EASY: 0x57f287, MEDIUM: 0xffd700, HARD: 0xff8c00, ELITE: 0xff0000 };
-const DIFF_EMOJI = { EASY: "🟢", MEDIUM: "🟡", HARD: "🟠", ELITE: "🔴" };
+const DIFF_COLOR = { EASY: COLORS.GREEN, MEDIUM: COLORS.GOLD, HARD: COLORS.ORANGE, ELITE: COLORS.RED };
 const DIFF_BONUS = { EASY: 0, MEDIUM: 200, HARD: 500, ELITE: 1000 };
 
-function contractEmbed(c, showClaimed = false) {
+const EXTRA_TIER_CHANNELS = {
+  EASY:   [],
+  MEDIUM: ["PRESTIGE"],
+  HARD:   ["SIGNATURE", "APOGEE"],
+  ELITE:  ["APOGEE", "PREMIERE"],
+};
+
+// ── Route pools ─────────────────────────────────────────────
+const NORMAL_ROUTES = [
+  { dep: "EGKK", arr: "LEMH", ac: ["A220", "A320"], diff: "EASY",   reward: 900  },
+  { dep: "LEMH", arr: "EGKK", ac: ["A220", "A320"], diff: "EASY",   reward: 900  },
+  { dep: "EGHI", arr: "LEMH", ac: ["A220", "A320"], diff: "EASY",   reward: 850  },
+  { dep: "EGKK", arr: "GCLP", ac: ["A320", "A350"], diff: "MEDIUM", reward: 1600 },
+  { dep: "GCLP", arr: "EGKK", ac: ["A320", "A350"], diff: "MEDIUM", reward: 1600 },
+  { dep: "EGKK", arr: "EFKT", ac: ["A320", "A220"], diff: "MEDIUM", reward: 1400 },
+  { dep: "LCLK", arr: "LEMH", ac: ["A220", "A320"], diff: "EASY",   reward: 850  },
+  { dep: "MDST", arr: "MDPC", ac: ["A220", "A320"], diff: "EASY",   reward: 700  },
+];
+const PRESTIGE_ROUTES = [
+  { dep: "EGKK", arr: "LCLK", ac: ["A320", "A350"], diff: "MEDIUM", reward: 2000 },
+  { dep: "LCLK", arr: "EGKK", ac: ["A320", "A350"], diff: "MEDIUM", reward: 2000 },
+  { dep: "EGHI", arr: "GCLP", ac: ["A320", "A350"], diff: "MEDIUM", reward: 1800 },
+  { dep: "LCLK", arr: "GCLP", ac: ["A320", "A350"], diff: "MEDIUM", reward: 1900 },
+];
+const SIGNATURE_ROUTES = [
+  { dep: "EGKK", arr: "MDPC", ac: ["B789", "B773"], diff: "HARD", reward: 3200 },
+  { dep: "MDPC", arr: "EGKK", ac: ["B789", "B773"], diff: "HARD", reward: 3200 },
+  { dep: "EGKK", arr: "LCLK", ac: ["B773", "A350"], diff: "HARD", reward: 2800 },
+  { dep: "EGHI", arr: "LCLK", ac: ["A350", "B789"], diff: "HARD", reward: 2600 },
+];
+const APOGEE_ROUTES = [
+  { dep: "EGKK", arr: "MTCA", ac: ["B773", "B789"], diff: "HARD",  reward: 4000 },
+  { dep: "LCLK", arr: "MDPC", ac: ["B773", "B789"], diff: "HARD",  reward: 3800 },
+  { dep: "EGKK", arr: "MDST", ac: ["B773"],         diff: "ELITE", reward: 5000 },
+  { dep: "LCLK", arr: "MTCA", ac: ["B773"],         diff: "ELITE", reward: 5200 },
+];
+const PREMIERE_ROUTES = [
+  { dep: "EGKK", arr: "MTCA", ac: ["B773"], diff: "ELITE", reward: 7000 },
+  { dep: "LCLK", arr: "MDPC", ac: ["B773"], diff: "ELITE", reward: 6800 },
+  { dep: "EGHI", arr: "MDST", ac: ["B773"], diff: "ELITE", reward: 6500 },
+  { dep: "EGKK", arr: "MDST", ac: ["B773"], diff: "ELITE", reward: 7200 },
+];
+const TIER_ROUTE_MAP = { PRESTIGE: PRESTIGE_ROUTES, SIGNATURE: SIGNATURE_ROUTES, APOGEE: APOGEE_ROUTES, PREMIERE: PREMIERE_ROUTES };
+
+const TEMPLATES = [
+  { title: (d,a) => `Priority Cargo Run — ${d} to ${a}`,
+    desc:  (d,a,ac) => `**DISPATCH BRIEFING**\nA time-sensitive cargo consignment must be transported from **${d}** to **${a}**.\n\nCrew must operate the **${ac}**. Proof of completed flight is mandatory.` },
+  { title: (d,a) => `Charter Flight — ${d} → ${a}`,
+    desc:  (d,a,ac) => `**DISPATCH BRIEFING**\nA high-priority charter service has been requested between **${d}** and **${a}**, requiring experienced crew on the **${ac}**.\n\nNon-stop service. Submit proof upon completion.` },
+  { title: (d,a) => `ACMI Lease Operation — ${d}/${a}`,
+    desc:  (d,a,ac) => `**DISPATCH BRIEFING**\nAn ACMI lease has been activated for the **${d}**–**${a}** sector. The **${ac}** operates on behalf of the contracting carrier.\n\nSubmit flight proof upon sector completion.` },
+  { title: (d,a) => `Positioning Flight — ${d} to ${a}`,
+    desc:  (d,a,ac) => `**DISPATCH BRIEFING**\nA **${ac}** requires repositioning from **${d}** to **${a}**. Ferry flight, no revenue passengers.\n\nProof of departure and arrival must be submitted.` },
+  { title: (d,a) => `Relief Flight — ${d}–${a}`,
+    desc:  (d,a,ac) => `**DISPATCH BRIEFING**\nDue to disruption at **${a}**, a relief flight has been authorised from **${d}**. The **${ac}** is assigned.\n\nFull proof of flight is required.` },
+];
+function makeContent(dep, arr, acLabel) {
+  const t = TEMPLATES[Math.floor(Math.random() * TEMPLATES.length)];
+  return { title: t.title(dep, arr), description: t.desc(dep, arr, acLabel) };
+}
+
+// ── Panel builder ──────────────────────────────────────────────
+function contractPanel(c, tierLabel = null) {
+  const emoji = config.EMOJI;
   const exp = c.expiresAt ? `<t:${Math.floor(new Date(c.expiresAt).getTime()/1000)}:R>` : "No expiry";
   const ac  = (!c.aircraft || c.aircraft.includes("ANY")) ? "Any fleet aircraft" : c.aircraft.join(", ");
-  const embed = new EmbedBuilder()
-    .setTitle(`📋 ${c.title}`)
-    .setColor(DIFF_COLOR[c.difficulty] ?? 0x5865f2)
-    .setDescription(c.description)
-    .addFields(
-      { name: "🛫 From",       value: c.departure,   inline: true },
-      { name: "🛬 To",         value: c.arrival,     inline: true },
-      { name: "✈️ Aircraft",   value: ac,            inline: true },
-      { name: `${CURRENCY_ICON} Reward`,  value: `**${c.reward.toLocaleString()} ${CURRENCY}**`, inline: true },
-      { name: "🏆 Difficulty", value: `${DIFF_EMOJI[c.difficulty]} ${c.difficulty}`, inline: true },
-      { name: "⏳ Expires",    value: exp,           inline: true },
-      { name: "🆔 Contract ID",value: `\`${c.id}\``, inline: true },
-    );
-  if (showClaimed && c.claimedBy) embed.addFields({ name: "👤 Claimed By", value: `<@${c.claimedBy}>`, inline: true });
-  embed.setFooter({ text: `AFBot Contracts • Use /contract claim ${c.id} to claim` });
-  return embed;
+  const status = c.claimedBy ? `Claimed by <@${c.claimedBy}>` : "Available";
+
+  const panel = container(DIFF_COLOR[c.difficulty] ?? COLORS.PURPLE)
+    .addTextDisplayComponents(text(
+      tierLabel
+        ? `${emoji.SCROLL.tag} **${tierLabel} Exclusive Contract**`
+        : `${emoji.SCROLL.tag} **New Contract**`
+    ))
+    .addSeparatorComponents(separator())
+    .addTextDisplayComponents(text(`**${c.title}**\n${c.description}`))
+    .addSeparatorComponents(separator())
+    .addTextDisplayComponents(text(
+      `**Departure**: ${c.departure}\n**Arrival**: ${c.arrival}\n**Aircraft**: ${ac}\n` +
+      `**Reward**: ${c.reward.toLocaleString()} ${CURRENCY}\n**Difficulty**: ${c.difficulty}\n` +
+      `**Expires**: ${exp}\n**Contract ID**: \`${c.id}\`\n**Status**: ${status}`
+    ))
+    .addSeparatorComponents(separator())
+    .addActionRowComponents(row(button(`contract_claim:${c.id}`, "Claim Contract", ButtonStyle.Primary, emoji.HANDSHAKE)));
+
+  return panel;
+}
+
+async function postToChannel(client, channelId, contract, tierLabel = null) {
+  if (!channelId) return;
+  try {
+    const ch  = await client.channels.fetch(channelId);
+    const msg = await ch.send(componentsPayload([contractPanel(contract, tierLabel)]));
+    if (!contract.messageId) {
+      contract.messageId = msg.id;
+      contract.messageChannelId = channelId;
+    }
+    save(db);
+  } catch (err) {
+    console.error(`[Contracts] Failed to post to channel ${channelId}:`, err.message);
+  }
+}
+
+async function postContractToChannels(client, contract) {
+  const diff = contract.difficulty;
+  if (diff === "EASY" || diff === "MEDIUM") {
+    await postToChannel(client, config.CONTRACT_CHANNEL, contract);
+  }
+  const tierKeys = EXTRA_TIER_CHANNELS[diff] ?? [];
+  for (const tierKey of tierKeys) {
+    const chanId   = config.TIER_CHANNELS?.[tierKey];
+    const tierName = TIERS.find(t => t.key === tierKey)?.name;
+    await postToChannel(client, chanId, contract, tierName);
+  }
+  save(db);
+}
+
+async function generateAndPostContracts(client, count = 3) {
+  const normalPool = [...NORMAL_ROUTES].sort(() => Math.random() - 0.5).slice(0, Math.ceil(count / 2));
+  for (const t of normalPool) {
+    const { title, description } = makeContent(t.dep, t.arr, t.ac.join("/"));
+    const contract = {
+      id: genId(), title, description,
+      departure: t.dep, arrival: t.arr, aircraft: t.ac,
+      reward: t.reward + (DIFF_BONUS[t.diff] ?? 0), difficulty: t.diff,
+      expiresAt: new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString(),
+      createdBy: "AUTO", active: true, claimedBy: null, completedBy: [],
+      createdAt: new Date().toISOString(), messageId: null, messageChannelId: null, tier: null,
+    };
+    db.contracts.push(contract);
+    save(db);
+    await postContractToChannels(client, contract);
+  }
+
+  for (const [tierKey, routes] of Object.entries(TIER_ROUTE_MAP)) {
+    if (!routes.length) continue;
+    const t = routes[Math.floor(Math.random() * routes.length)];
+    const { title, description } = makeContent(t.dep, t.arr, t.ac.join("/"));
+    const tierName = TIERS.find(x => x.key === tierKey)?.name;
+    const contract = {
+      id: genId(), title, description,
+      departure: t.dep, arrival: t.arr, aircraft: t.ac,
+      reward: t.reward + (DIFF_BONUS[t.diff] ?? 0), difficulty: t.diff, tier: tierKey,
+      expiresAt: new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString(),
+      createdBy: "AUTO", active: true, claimedBy: null, completedBy: [],
+      createdAt: new Date().toISOString(), messageId: null, messageChannelId: null,
+    };
+    db.contracts.push(contract);
+    save(db);
+    const chanId = config.TIER_CHANNELS?.[tierKey];
+    await postToChannel(client, chanId, contract, tierName);
+  }
 }
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("contract")
-    .setDescription("Contract management system.")
-
-    .addSubcommand(s => s.setName("list").setDescription("List all available unclaimed contracts.")
-      .addStringOption(o => o.setName("difficulty").setDescription("Filter by difficulty").setRequired(false)
-        .addChoices({name:"🟢 Easy",value:"EASY"},{name:"🟡 Medium",value:"MEDIUM"},{name:"🟠 Hard",value:"HARD"},{name:"🔴 Elite",value:"ELITE"})))
-
-    .addSubcommand(s => s.setName("info").setDescription("View full details of a contract.")
-      .addStringOption(o => o.setName("id").setDescription("Contract ID").setRequired(true)))
-
-    .addSubcommand(s => s.setName("claim").setDescription("Claim a contract to work on.")
-      .addStringOption(o => o.setName("id").setDescription("Contract ID").setRequired(true)))
-
+    .setDescription("Contract management.")
+    .addSubcommand(s => s.setName("list").setDescription("List available contracts.")
+      .addStringOption(o => o.setName("difficulty").setDescription("Filter").setRequired(false)
+        .addChoices({ name: "Easy", value: "EASY" }, { name: "Medium", value: "MEDIUM" }, { name: "Hard", value: "HARD" }, { name: "Elite", value: "ELITE" })))
+    .addSubcommand(s => s.setName("mine").setDescription("View your claimed contracts."))
     .addSubcommand(s => s.setName("unclaim").setDescription("Release a contract you claimed.")
       .addStringOption(o => o.setName("id").setDescription("Contract ID").setRequired(true)))
-
-    .addSubcommand(s => s.setName("mine").setDescription("View contracts you have claimed."))
-
-    .addSubcommand(s => s.setName("complete").setDescription("Manually complete a contract (staff verify).")
-      .addStringOption(o => o.setName("id").setDescription("Contract ID").setRequired(true))
-      .addAttachmentOption(o => o.setName("proof").setDescription("Screenshot of completed flight").setRequired(true)))
-
-    .addSubcommand(s => s.setName("create").setDescription("Create a new contract. (Staff only)")
-      .addStringOption(o => o.setName("title").setDescription("Contract title").setRequired(true))
-      .addStringOption(o => o.setName("description").setDescription("Contract description").setRequired(true))
-      .addStringOption(o => o.setName("departure").setDescription("ICAO departure (or ANY)").setRequired(true))
-      .addStringOption(o => o.setName("arrival").setDescription("ICAO arrival (or ANY)").setRequired(true))
-      .addIntegerOption(o => o.setName("reward").setDescription("Payout in KD").setRequired(true).setMinValue(100))
-      .addStringOption(o => o.setName("difficulty").setDescription("Difficulty level").setRequired(true)
-        .addChoices({name:"🟢 Easy",value:"EASY"},{name:"🟡 Medium",value:"MEDIUM"},{name:"🟠 Hard",value:"HARD"},{name:"🔴 Elite",value:"ELITE"}))
-      .addStringOption(o => o.setName("aircraft").setDescription("Required aircraft (comma-separated, or ANY)").setRequired(false))
-      .addStringOption(o => o.setName("expires").setDescription("Expiry (e.g. 7d, 24h, or leave blank)").setRequired(false))
-      .addIntegerOption(o => o.setName("slots").setDescription("Max pilots who can complete (default unlimited)").setRequired(false).setMinValue(1)))
-
-    .addSubcommand(s => s.setName("delete").setDescription("Delete a contract. (Staff only)")
+    .addSubcommand(s => s.setName("lookup").setDescription("Look up a contract by ID.")
       .addStringOption(o => o.setName("id").setDescription("Contract ID").setRequired(true)))
-
-    .addSubcommand(s => s.setName("approve").setDescription("Approve and pay a completed contract. (Staff only)")
+    .addSubcommand(s => s.setName("complete").setDescription("Submit contract completion with proof.")
       .addStringOption(o => o.setName("id").setDescription("Contract ID").setRequired(true))
-      .addUserOption(o => o.setName("pilot").setDescription("Pilot to pay").setRequired(true))),
+      .addAttachmentOption(o => o.setName("proof").setDescription("Flight screenshot").setRequired(true)))
+    .addSubcommand(s => s.setName("create").setDescription("Create a contract manually. (Staff only)")
+      .addStringOption(o => o.setName("departure").setDescription("Departure").setRequired(true).addChoices(...AIRPORT_CHOICES))
+      .addStringOption(o => o.setName("arrival").setDescription("Arrival").setRequired(true).addChoices(...AIRPORT_CHOICES))
+      .addIntegerOption(o => o.setName("reward").setDescription("Reward").setRequired(true).setMinValue(100))
+      .addStringOption(o => o.setName("difficulty").setDescription("Difficulty").setRequired(true)
+        .addChoices({ name: "Easy", value: "EASY" }, { name: "Medium", value: "MEDIUM" }, { name: "Hard", value: "HARD" }, { name: "Elite", value: "ELITE" }))
+      .addStringOption(o => o.setName("aircraft").setDescription("Aircraft (comma-separated or ANY)").setRequired(false))
+      .addStringOption(o => o.setName("expires").setDescription("Expiry e.g. 12h, 7d").setRequired(false)))
+    .addSubcommand(s => s.setName("forcepost").setDescription("Force auto-post new contracts now. (Staff only)")
+      .addIntegerOption(o => o.setName("count").setDescription("How many normal contracts (default 3)").setRequired(false).setMinValue(1).setMaxValue(5)))
+    .addSubcommand(s => s.setName("approve").setDescription("Approve and pay a contract. (Staff only)")
+      .addStringOption(o => o.setName("id").setDescription("Contract ID").setRequired(true))
+      .addUserOption(o => o.setName("pilot").setDescription("Pilot to pay").setRequired(true)))
+    .addSubcommand(s => s.setName("delete").setDescription("Delete a contract. (Staff only)")
+      .addStringOption(o => o.setName("id").setDescription("Contract ID").setRequired(true))),
 
-  async execute(interaction) {
+  async execute(interaction, client) {
+    const emoji = config.EMOJI;
+    const err = (msg) => componentsPayload(
+      [container(COLORS.RED).addTextDisplayComponents(text(`${emoji.NO.tag} ${msg}`))],
+      { ephemeral: true }
+    );
     const sub = interaction.options.getSubcommand();
 
-    // ── LIST ──────────────────────────────────────────────────
     if (sub === "list") {
-      const diff = interaction.options.getString("difficulty");
-      // Expire old contracts
-      const now = Date.now();
-      db.contracts.forEach(c => {
-        if (c.expiresAt && new Date(c.expiresAt).getTime() < now) c.active = false;
-      });
+      const diff   = interaction.options.getString("difficulty");
+      const member = interaction.member;
+      const now    = Date.now();
+      db.contracts.forEach(c => { if (c.expiresAt && new Date(c.expiresAt).getTime() < now) c.active = false; });
       save(db);
 
-      let available = db.contracts.filter(c =>
-        c.active && !c.claimedBy &&
-        (!diff || c.difficulty === diff)
-      );
-
-      if (!available.length) {
-        return interaction.reply({ content: "📭 No contracts available right now. Check back later!", ephemeral: true });
-      }
-
-      // Group by difficulty
-      const sorted = available.sort((a,b) => {
-        const order = ["ELITE","HARD","MEDIUM","EASY"];
-        return order.indexOf(a.difficulty) - order.indexOf(b.difficulty);
+      const available = db.contracts.filter(c => {
+        if (!c.active || c.claimedBy) return false;
+        if (diff && c.difficulty !== diff) return false;
+        if (c.tier) return hasTier(member, c.tier);
+        return true;
       });
 
-      const desc = sorted.slice(0,10).map(c => {
+      if (!available.length)
+        return interaction.reply(componentsPayload(
+          [container(COLORS.GREY).addTextDisplayComponents(text("No contracts available for you right now."))],
+          { ephemeral: true }
+        ));
+
+      const rows = available.slice(0, 10).map(c => {
         const exp = c.expiresAt ? `<t:${Math.floor(new Date(c.expiresAt).getTime()/1000)}:R>` : "∞";
-        const ac  = (!c.aircraft||c.aircraft.includes("ANY")) ? "Any" : c.aircraft.join("/");
-        return `${DIFF_EMOJI[c.difficulty]} **${c.title}** • \`${c.id}\`\n> ${c.departure}→${c.arrival} · ${ac} · **${c.reward.toLocaleString()} ${CURRENCY}** · Exp: ${exp}`;
-      }).join("\n\n");
+        const ac  = (!c.aircraft || c.aircraft.includes("ANY")) ? "Any" : c.aircraft.join("/");
+        const tierTag = c.tier ? ` · ${TIERS.find(t => t.key === c.tier)?.emoji ?? ""}` : "";
+        return `**${c.title}** \`${c.id}\`\n${c.departure}→${c.arrival} · ${ac} · **${c.reward.toLocaleString()} ${CURRENCY}**${tierTag} · Exp: ${exp}`;
+      });
 
-      const embed = new EmbedBuilder()
-        .setTitle("📋 Available Contracts")
-        .setColor(0x5865f2)
-        .setDescription(desc)
-        .addFields({ name: "ℹ️ How to claim", value: "Use `/contract claim <ID>` to claim a contract, then log the matching flight to get auto-paid!", inline: false })
-        .setFooter({ text: `${sorted.length} contract(s) available${diff ? ` (${diff})` : ""}` })
-        .setTimestamp();
-
-      return interaction.reply({ embeds: [embed] });
+      return interaction.reply(componentsPayload([
+        container(COLORS.PURPLE)
+          .addTextDisplayComponents(text(`${emoji.SCROLL.tag} **Available Contracts**`))
+          .addSeparatorComponents(separator())
+          .addTextDisplayComponents(text(rows.join("\n\n")))
+          .addSeparatorComponents(separator())
+          .addTextDisplayComponents(text(`-# ${available.length} contract(s) available to you`))
+      ]));
     }
 
-    // ── INFO ──────────────────────────────────────────────────
-    if (sub === "info") {
-      const id = interaction.options.getString("id").toUpperCase();
-      const c  = db.contracts.find(c => c.id === id);
-      if (!c) return interaction.reply({ embeds: [errorEmbed(`Contract \`${id}\` not found.`)], ephemeral: true });
-      return interaction.reply({ embeds: [contractEmbed(c, isStaff(interaction.member))] });
+    if (sub === "mine") {
+      const mine = db.contracts.filter(c => c.active && c.claimedBy === interaction.user.id);
+      if (!mine.length)
+        return interaction.reply(componentsPayload(
+          [container(COLORS.GREY).addTextDisplayComponents(text("You have no active contracts."))],
+          { ephemeral: true }
+        ));
+      const rows = mine.map(c => {
+        const exp     = c.expiresAt ? `Exp <t:${Math.floor(new Date(c.expiresAt).getTime()/1000)}:R>` : "No expiry";
+        const tierTag = c.tier ? ` · ${TIERS.find(t => t.key === c.tier)?.name ?? ""}` : "";
+        return `**${c.title}** \`${c.id}\`\n${c.departure}→${c.arrival} · **${c.reward.toLocaleString()} ${CURRENCY}**${tierTag} · ${exp}`;
+      });
+      return interaction.reply(componentsPayload([
+        container(COLORS.PURPLE)
+          .addTextDisplayComponents(text(`${emoji.SCROLL.tag} **Your Active Contracts**`))
+          .addSeparatorComponents(separator())
+          .addTextDisplayComponents(text(rows.join("\n\n")))
+      ]));
     }
 
-    // ── CLAIM ─────────────────────────────────────────────────
-    if (sub === "claim") {
-      const id = interaction.options.getString("id").toUpperCase();
-      const c  = db.contracts.find(c => c.id === id);
-      if (!c)        return interaction.reply({ embeds: [errorEmbed(`Contract \`${id}\` not found.`)], ephemeral: true });
-      if (!c.active) return interaction.reply({ embeds: [errorEmbed("This contract is no longer active.")], ephemeral: true });
-      if (c.claimedBy) return interaction.reply({ embeds: [errorEmbed("This contract has already been claimed.")], ephemeral: true });
-      if (c.completedBy?.includes(interaction.user.id)) return interaction.reply({ embeds: [errorEmbed("You already completed this contract.")], ephemeral: true });
-
-      // Check pilot doesn't already have too many active claims
-      const activeClaims = db.contracts.filter(x => x.active && x.claimedBy === interaction.user.id);
-      if (activeClaims.length >= 3) return interaction.reply({ embeds: [errorEmbed("You can only hold **3 active contracts** at a time. Use `/contract unclaim` to release one.")], ephemeral: true });
-
-      c.claimedBy = interaction.user.id;
-      save(db);
-
-      const exp = c.expiresAt ? `\n**Expires:** <t:${Math.floor(new Date(c.expiresAt).getTime()/1000)}:R>` : "";
-      const ac  = (!c.aircraft||c.aircraft.includes("ANY")) ? "Any fleet aircraft" : c.aircraft.join(", ");
-
-      return interaction.reply({ embeds: [
-        new EmbedBuilder()
-          .setTitle("✅ Contract Claimed!")
-          .setColor(DIFF_COLOR[c.difficulty])
-          .setDescription(`You have claimed **${c.title}**.\n\nLog a flight matching this contract's route and aircraft to get **auto-paid** instantly!${exp}`)
-          .addFields(
-            { name: "🛫 From",       value: c.departure, inline: true },
-            { name: "🛬 To",         value: c.arrival,   inline: true },
-            { name: "✈️ Aircraft",   value: ac,          inline: true },
-            { name: `${CURRENCY_ICON} Reward`, value: `**${c.reward.toLocaleString()} ${CURRENCY}**`, inline: true },
-            { name: "🆔 ID",         value: `\`${c.id}\``, inline: true },
-          )
-          .setFooter({ text: "Log your flight now to earn your reward!" })
-          .setTimestamp()
-      ]});
-    }
-
-    // ── UNCLAIM ───────────────────────────────────────────────
     if (sub === "unclaim") {
       const id = interaction.options.getString("id").toUpperCase();
       const c  = db.contracts.find(c => c.id === id && c.claimedBy === interaction.user.id);
-      if (!c) return interaction.reply({ embeds: [errorEmbed("You don't have this contract claimed.")], ephemeral: true });
+      if (!c) return interaction.reply(err("You don't have this contract claimed."));
       c.claimedBy = null;
+      if (c.messageId && c.messageChannelId) {
+        try {
+          const ch  = await client.channels.fetch(c.messageChannelId);
+          const msg = await ch.messages.fetch(c.messageId);
+          await msg.edit(componentsPayload([contractPanel(c)]));
+        } catch {}
+      }
       save(db);
-      return interaction.reply({ embeds: [
-        new EmbedBuilder().setColor(0xffd700).setDescription(`✅ Released contract **${c.title}** (\`${c.id}\`). It's now available for others to claim.`).setTimestamp()
-      ]});
+      return interaction.reply(componentsPayload([
+        container(COLORS.GOLD).addTextDisplayComponents(text(`Released **${c.title}** — it's available again.`))
+      ]));
     }
 
-    // ── MINE ──────────────────────────────────────────────────
-    if (sub === "mine") {
-      const mine = db.contracts.filter(c => c.active && c.claimedBy === interaction.user.id);
-      if (!mine.length) return interaction.reply({ content: "📭 You have no active contracts. Use `/contract list` to browse!", ephemeral: true });
-      const desc = mine.map(c => {
-        const exp = c.expiresAt ? `Exp <t:${Math.floor(new Date(c.expiresAt).getTime()/1000)}:R>` : "No expiry";
-        return `${DIFF_EMOJI[c.difficulty]} **${c.title}** \`${c.id}\`\n> ${c.departure}→${c.arrival} · **${c.reward.toLocaleString()} ${CURRENCY}** · ${exp}`;
-      }).join("\n\n");
-      return interaction.reply({ embeds: [
-        new EmbedBuilder().setTitle("📋 Your Active Contracts").setColor(0x5865f2)
-          .setDescription(desc).setFooter({ text: "Log matching flights to auto-complete and get paid!" }).setTimestamp()
-      ]});
+    if (sub === "lookup") {
+      const id = interaction.options.getString("id").toUpperCase();
+      const c  = db.contracts.find(c => c.id === id);
+      if (!c) return interaction.reply(err(`Contract \`${id}\` not found.`));
+      const exp    = c.expiresAt ? `<t:${Math.floor(new Date(c.expiresAt).getTime()/1000)}:R>` : "No expiry";
+      const ac     = (!c.aircraft || c.aircraft.includes("ANY")) ? "Any fleet aircraft" : c.aircraft.join(", ");
+      const status = !c.active ? "Inactive/Completed" : c.claimedBy ? `Claimed by <@${c.claimedBy}>` : "Available";
+      const tierName = c.tier ? TIERS.find(t => t.key === c.tier)?.name : "Standard";
+
+      return interaction.reply(componentsPayload([
+        container(DIFF_COLOR[c.difficulty] ?? COLORS.PURPLE)
+          .addTextDisplayComponents(text(`${emoji.MAGNIFIER.tag} **${c.title}**`))
+          .addSeparatorComponents(separator())
+          .addTextDisplayComponents(text(c.description))
+          .addSeparatorComponents(separator())
+          .addTextDisplayComponents(text(
+            `**Contract ID**: \`${c.id}\`\n**Status**: ${status}\n**Difficulty**: ${c.difficulty}\n**Tier**: ${tierName}\n` +
+            `**Departure**: ${c.departure}\n**Arrival**: ${c.arrival}\n**Aircraft**: ${ac}\n` +
+            `**Reward**: ${c.reward.toLocaleString()} ${CURRENCY}\n**Expires**: ${exp}\n` +
+            `**Created By**: ${c.createdBy === "AUTO" ? "Auto-generated" : `<@${c.createdBy}>`}\n` +
+            `**Completed By**: ${c.completedBy?.length ? c.completedBy.map(u => `<@${u}>`).join(", ") : "None"}`
+          ))
+      ], { ephemeral: true }));
     }
 
-    // ── COMPLETE (manual submission) ──────────────────────────
     if (sub === "complete") {
       const id    = interaction.options.getString("id").toUpperCase();
       const proof = interaction.options.getAttachment("proof");
       const c     = db.contracts.find(c => c.id === id);
-      if (!c)           return interaction.reply({ embeds: [errorEmbed(`Contract \`${id}\` not found.`)], ephemeral: true });
-      if (!c.active)    return interaction.reply({ embeds: [errorEmbed("Contract is no longer active.")], ephemeral: true });
-      if (c.claimedBy !== interaction.user.id) return interaction.reply({ embeds: [errorEmbed("You haven't claimed this contract.")], ephemeral: true });
-      if (c.completedBy?.includes(interaction.user.id)) return interaction.reply({ embeds: [errorEmbed("Already completed.")], ephemeral: true });
-      if (!proof.contentType?.startsWith("image/")) return interaction.reply({ embeds: [errorEmbed("Proof must be an image.")], ephemeral: true });
+      if (!c)                                            return interaction.reply(err("Contract not found."));
+      if (!c.active)                                     return interaction.reply(err("Contract no longer active."));
+      if (c.claimedBy !== interaction.user.id)           return interaction.reply(err("You haven't claimed this contract."));
+      if (c.completedBy?.includes(interaction.user.id))  return interaction.reply(err("Already completed."));
+      if (!proof.contentType?.startsWith("image/"))      return interaction.reply(err("Proof must be an image."));
 
-      // Post to staff for review if contract channel is set
-      if (process.env.CONTRACT_REVIEW_CHANNEL) {
-        const ch = await interaction.client.channels.fetch(process.env.CONTRACT_REVIEW_CHANNEL).catch(()=>null);
-        if (ch) {
-          await ch.send({ embeds: [
-            new EmbedBuilder().setTitle("📋 Contract Completion Request").setColor(0xffd700)
-              .setDescription(`<@${interaction.user.id}> is claiming completion of **${c.title}** (\`${c.id}\`)`)
-              .addFields(
-                { name: "Pilot",    value: `<@${interaction.user.id}>`, inline: true },
-                { name: "Contract", value: `${c.departure}→${c.arrival}`, inline: true },
-                { name: "Reward",   value: `${c.reward.toLocaleString()} ${CURRENCY}`, inline: true },
-              )
-              .setImage(proof.url)
-              .setFooter({ text: `Use /contract approve ${c.id} @pilot to pay` }).setTimestamp()
-          ]});
-        }
+      if (config.CONTRACT_REVIEW_CHANNEL) {
+        const ch = await client.channels.fetch(config.CONTRACT_REVIEW_CHANNEL).catch(() => null);
+        if (ch) await ch.send(componentsPayload([
+          container(COLORS.GOLD)
+            .addTextDisplayComponents(text(`${emoji.SCROLL.tag} **Contract Completion Request**`))
+            .addSeparatorComponents(separator())
+            .addTextDisplayComponents(text(
+              `<@${interaction.user.id}> claims completion of **${c.title}** (\`${c.id}\`)\n\n` +
+              `**Pilot**: <@${interaction.user.id}>\n**Route**: ${c.departure}→${c.arrival}\n**Reward**: ${c.reward.toLocaleString()} ${CURRENCY}`
+            ))
+            .addSeparatorComponents(separator())
+            .addMediaGalleryComponents(require("../utils/components").mediaGallery(proof.url))
+            .addSeparatorComponents(separator())
+            .addTextDisplayComponents(text(`-# Use /contract approve ${c.id} @pilot to pay`))
+        ]));
       }
-
-      return interaction.reply({ embeds: [
-        new EmbedBuilder().setColor(0xffd700)
-          .setDescription(`📋 Your completion request for **${c.title}** has been submitted for staff review. You'll be paid once approved!`)
-          .setTimestamp()
-      ], ephemeral: true });
+      return interaction.reply(componentsPayload(
+        [container(COLORS.GOLD).addTextDisplayComponents(text("Completion submitted for staff review. You'll be paid once approved!"))],
+        { ephemeral: true }
+      ));
     }
 
-    // ── CREATE (staff) ────────────────────────────────────────
     if (sub === "create") {
-      if (!isStaff(interaction.member)) return interaction.reply({ embeds: [errorEmbed("Staff only.")], ephemeral: true });
-
-      const title  = interaction.options.getString("title");
-      const desc   = interaction.options.getString("description");
-      const dep    = interaction.options.getString("departure").toUpperCase();
-      const arr    = interaction.options.getString("arrival").toUpperCase();
+      if (!isStaff(interaction.member)) return interaction.reply(err("Staff only."));
+      const dep    = interaction.options.getString("departure");
+      const arr    = interaction.options.getString("arrival");
       const reward = interaction.options.getInteger("reward");
       const diff   = interaction.options.getString("difficulty");
       const acRaw  = interaction.options.getString("aircraft");
       const expStr = interaction.options.getString("expires");
-      const slots  = interaction.options.getInteger("slots") ?? null;
-
-      // Parse aircraft
       let aircraft = ["ANY"];
       if (acRaw && acRaw.toUpperCase() !== "ANY") {
         aircraft = acRaw.split(",").map(s => s.trim().toUpperCase()).filter(s => FLEET_KEYS.includes(s));
-        if (!aircraft.length) return interaction.reply({ embeds: [errorEmbed(`Invalid aircraft. Valid: ${FLEET_KEYS.join(", ")}`)], ephemeral: true });
+        if (!aircraft.length) return interaction.reply(err(`Valid aircraft: ${FLEET_KEYS.join(", ")}`));
       }
-
-      // Parse expiry
       let expiresAt = null;
       if (expStr) {
         const match = expStr.match(/^(\d+)(d|h|m)$/i);
-        if (!match) return interaction.reply({ embeds: [errorEmbed("Invalid expiry format. Use e.g. `7d`, `24h`, `90m`.")], ephemeral: true });
+        if (!match) return interaction.reply(err("Invalid expiry. Use e.g. `12h`, `7d`."));
         const mult = { d: 86400000, h: 3600000, m: 60000 };
         expiresAt = new Date(Date.now() + parseInt(match[1]) * mult[match[2].toLowerCase()]).toISOString();
       }
-
-      const bonus = DIFF_BONUS[diff] ?? 0;
-
+      const { title, description } = makeContent(dep, arr, aircraft.join("/"));
       const contract = {
-        id: genId(), title, description: desc,
+        id: genId(), title, description,
         departure: dep, arrival: arr, aircraft,
-        reward: reward + bonus, baseReward: reward, bonusReward: bonus,
-        difficulty: diff, expiresAt, slots, slotsUsed: 0,
-        createdBy: interaction.user.id, active: true,
-        claimedBy: null, completedBy: [],
-        createdAt: new Date().toISOString(),
+        reward: reward + (DIFF_BONUS[diff] ?? 0), difficulty: diff,
+        tier: null, expiresAt, createdBy: interaction.user.id,
+        active: true, claimedBy: null, completedBy: [],
+        createdAt: new Date().toISOString(), messageId: null, messageChannelId: null,
       };
-
       db.contracts.push(contract);
       save(db);
+      await postContractToChannels(client, contract);
+      return interaction.reply(componentsPayload(
+        [container(COLORS.GREEN).addTextDisplayComponents(text(`${emoji.YES.tag} Contract **${title}** created and posted.`))],
+        { ephemeral: true }
+      ));
+    }
 
-      const embed = contractEmbed(contract);
-      embed.setTitle(`✅ Contract Created — ${title}`);
-      embed.setDescription(`${desc}\n\n**Difficulty Bonus:** +${bonus.toLocaleString()} ${CURRENCY}\n**Total Payout:** ${contract.reward.toLocaleString()} ${CURRENCY}`);
-
-      await interaction.reply({ embeds: [embed] });
-
-      // Announce in contracts channel
-      if (process.env.CONTRACT_CHANNEL) {
-        const ch = await interaction.client.channels.fetch(process.env.CONTRACT_CHANNEL).catch(()=>null);
-        if (ch) {
-          const ann = contractEmbed(contract);
-          ann.setTitle(`🆕 New Contract Posted — ${title}`);
-          ch.send({ content: "📢 **A new contract is available!** Use `/contract claim` to take it.", embeds: [ann] });
-        }
-      }
+    if (sub === "forcepost") {
+      if (!isStaff(interaction.member)) return interaction.reply(err("Staff only."));
+      const count = interaction.options.getInteger("count") ?? 3;
+      await interaction.reply(componentsPayload(
+        [container(COLORS.GREEN).addTextDisplayComponents(text(`${emoji.YES.tag} Posting ${count} normal contract(s) + 1 per tier channel...`))],
+        { ephemeral: true }
+      ));
+      await generateAndPostContracts(client, count);
       return;
     }
 
-    // ── DELETE (staff) ────────────────────────────────────────
-    if (sub === "delete") {
-      if (!isStaff(interaction.member)) return interaction.reply({ embeds: [errorEmbed("Staff only.")], ephemeral: true });
-      const id  = interaction.options.getString("id").toUpperCase();
-      const idx = db.contracts.findIndex(c => c.id === id);
-      if (idx === -1) return interaction.reply({ embeds: [errorEmbed(`Contract \`${id}\` not found.`)], ephemeral: true });
-      const [removed] = db.contracts.splice(idx, 1);
-      save(db);
-      return interaction.reply({ embeds: [
-        new EmbedBuilder().setColor(0xff4444)
-          .setDescription(`🗑️ Deleted contract **${removed.title}** (\`${removed.id}\`).`).setTimestamp()
-      ]});
-    }
-
-    // ── APPROVE (staff) ───────────────────────────────────────
     if (sub === "approve") {
-      if (!isStaff(interaction.member)) return interaction.reply({ embeds: [errorEmbed("Staff only.")], ephemeral: true });
-      const id     = interaction.options.getString("id").toUpperCase();
-      const pilot  = interaction.options.getUser("pilot");
-      const c      = db.contracts.find(c => c.id === id);
-      if (!c) return interaction.reply({ embeds: [errorEmbed(`Contract \`${id}\` not found.`)], ephemeral: true });
-      if (c.completedBy?.includes(pilot.id)) return interaction.reply({ embeds: [errorEmbed("Pilot already paid for this contract.")], ephemeral: true });
+      if (!isStaff(interaction.member)) return interaction.reply(err("Staff only."));
+      const id    = interaction.options.getString("id").toUpperCase();
+      const pilot = interaction.options.getUser("pilot");
+      const c     = db.contracts.find(c => c.id === id);
+      if (!c) return interaction.reply(err("Contract not found."));
+      if (c.completedBy?.includes(pilot.id)) return interaction.reply(err("Pilot already paid."));
 
       if (!c.completedBy) c.completedBy = [];
       c.completedBy.push(pilot.id);
       c.claimedBy = null;
-
-      // Close contract if slots used up
-      if (c.slots) {
-        c.slotsUsed = (c.slotsUsed || 0) + 1;
-        if (c.slotsUsed >= c.slots) c.active = false;
-      }
-
+      c.active    = false;
       const newBal = addBalance(pilot.id, c.reward);
       logTx(pilot.id, "CONTRACT", c.reward, `Contract: ${c.title} (${c.id})`, interaction.user.id);
       save(db);
 
-      await interaction.reply({ embeds: [
-        new EmbedBuilder().setTitle(`${CURRENCY_ICON} Contract Approved & Paid`).setColor(0x57f287)
-          .addFields(
-            { name: "👤 Pilot",       value: `<@${pilot.id}>`, inline: true },
-            { name: "📋 Contract",    value: c.title,          inline: true },
-            { name: `${CURRENCY_ICON} Paid`, value: `**${c.reward.toLocaleString()} ${CURRENCY}**`, inline: true },
-            { name: "💵 New Balance", value: `**${newBal.toLocaleString()} ${CURRENCY}**`, inline: true },
-          ).setTimestamp()
-      ]});
+      if (c.messageId && c.messageChannelId) {
+        try {
+          const ch  = await client.channels.fetch(c.messageChannelId);
+          const msg = await ch.messages.fetch(c.messageId);
+          await msg.edit(componentsPayload([
+            container(COLORS.GREY)
+              .addTextDisplayComponents(text(`~~**${c.title}**~~ *(Completed)*`))
+              .addSeparatorComponents(separator())
+              .addActionRowComponents(row(button(`contract_claim:${c.id}`, "Completed", ButtonStyle.Secondary, emoji.YES, true)))
+          ]));
+        } catch {}
+      }
 
-      pilot.send({ embeds: [
-        new EmbedBuilder().setTitle(`${CURRENCY_ICON} Contract Completed!`).setColor(0x57f287)
-          .setDescription(`Your contract **${c.title}** has been approved!\n\n**Reward: +${c.reward.toLocaleString()} ${CURRENCY}**\n**New Balance: ${newBal.toLocaleString()} ${CURRENCY}**`)
-          .setFooter({ text: "AFBot Virtual Economy" }).setTimestamp()
-      ]}).catch(()=>{});
+      await interaction.reply(componentsPayload([
+        container(COLORS.GREEN)
+          .addTextDisplayComponents(text(`${emoji.YES.tag} **Contract Approved & Paid**`))
+          .addSeparatorComponents(separator())
+          .addTextDisplayComponents(text(
+            `**Pilot**: <@${pilot.id}>\n**Contract**: \`${c.id}\` ${c.title}\n**Paid**: ${c.reward.toLocaleString()} ${CURRENCY}\n**New Balance**: ${newBal.toLocaleString()} ${CURRENCY}`
+          ))
+      ]));
+
+      pilot.send(componentsPayload([
+        container(COLORS.GREEN)
+          .addTextDisplayComponents(text(`${emoji.YES.tag} **Contract Completed!**`))
+          .addSeparatorComponents(separator())
+          .addTextDisplayComponents(text(`**${c.title}** approved!\n\n**Reward**: +${c.reward.toLocaleString()} ${CURRENCY}\n**New Balance**: ${newBal.toLocaleString()} ${CURRENCY}`))
+      ])).catch(() => {});
+      return;
+    }
+
+    if (sub === "delete") {
+      if (!isStaff(interaction.member)) return interaction.reply(err("Staff only."));
+      const id  = interaction.options.getString("id").toUpperCase();
+      const idx = db.contracts.findIndex(c => c.id === id);
+      if (idx === -1) return interaction.reply(err("Contract not found."));
+      const [removed] = db.contracts.splice(idx, 1);
+      save(db);
+      if (removed.messageId && removed.messageChannelId) {
+        try {
+          const ch  = await client.channels.fetch(removed.messageChannelId);
+          const msg = await ch.messages.fetch(removed.messageId);
+          await msg.delete();
+        } catch {}
+      }
+      return interaction.reply(componentsPayload([
+        container(COLORS.RED).addTextDisplayComponents(text(`Deleted contract **${removed.title}** (\`${removed.id}\`).`))
+      ]));
     }
   },
 
-  // Exported for autopay in log.js
-  tryAutopay,
+  generateAndPostContracts,
+  contractPanel,
 };
-
-// ── Autopay on flight log ─────────────────────────────────────
-async function tryAutopay(userId, flight, client) {
-  const now = Date.now();
-  const matches = db.contracts.filter(c =>
-    c.active &&
-    c.claimedBy === userId &&
-    !c.completedBy?.includes(userId) &&
-    contractMatchesFlight(c, flight) &&
-    (!c.expiresAt || new Date(c.expiresAt).getTime() > now)
-  );
-
-  if (!matches.length) return null;
-
-  const results = [];
-  for (const c of matches) {
-    if (!c.completedBy) c.completedBy = [];
-    c.completedBy.push(userId);
-    c.claimedBy = null;
-
-    if (c.slots) {
-      c.slotsUsed = (c.slotsUsed || 0) + 1;
-      if (c.slotsUsed >= c.slots) c.active = false;
-    }
-
-    const newBal = addBalance(userId, c.reward);
-    logTx(userId, "CONTRACT", c.reward, `Autopay: ${c.title} (${c.id})`);
-    results.push({ contract: c, newBal });
-  }
-
-  save(db);
-  return results;
-}

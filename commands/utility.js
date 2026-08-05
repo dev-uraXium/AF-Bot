@@ -1,90 +1,73 @@
-// commands/utility.js
-const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
+// commands/utility.js — /ping | /help
+const { SlashCommandBuilder } = require("discord.js");
+const config = require("../config");
+const { COLORS, text, separator, container, componentsPayload } = require("../utils/components");
 
 module.exports = [
-  // ── /ping ──────────────────────────────────────────────────
   {
-    data: new SlashCommandBuilder()
-      .setName("ping")
-      .setDescription("Check bot latency."),
-
+    data: new SlashCommandBuilder().setName("ping").setDescription("Check bot latency."),
     async execute(interaction, client) {
-      const sent    = await interaction.reply({ content: "Pinging…", fetchReply: true });
+      const sent = await interaction.reply(componentsPayload(
+        [container(COLORS.PURPLE).addTextDisplayComponents(text("Pinging…"))],
+        { fetchReply: true }
+      ));
       const latency = sent.createdTimestamp - interaction.createdTimestamp;
-      await interaction.editReply({
-        content: "",
-        embeds: [
-          new EmbedBuilder()
-            .setTitle("🏓 Pong!")
-            .setColor(0x5865f2)
-            .addFields(
-              { name: "⏱️ Bot Latency", value: `\`${latency}ms\``,                              inline: true },
-              { name: "🌐 API Latency", value: `\`${Math.round(client.ws.ping)}ms\``, inline: true },
-            )
-            .setTimestamp()
-        ]
-      });
+      await interaction.editReply(componentsPayload([
+        container(COLORS.PURPLE)
+          .addTextDisplayComponents(text("🏓 **Pong!**"))
+          .addSeparatorComponents(separator())
+          .addTextDisplayComponents(text(`**Bot Latency**: \`${latency}ms\`\n**API Latency**: \`${Math.round(client.ws.ping)}ms\``))
+      ]));
     },
   },
-
-  // ── /help ──────────────────────────────────────────────────
   {
-    data: new SlashCommandBuilder()
-      .setName("help")
-      .setDescription("List all available commands."),
-
+    data: new SlashCommandBuilder().setName("help").setDescription("List all available commands."),
     async execute(interaction) {
-      const embed = new EmbedBuilder()
-        .setTitle("📋 AFBot — Command Reference")
-        .setColor(0x5865f2)
-        .setThumbnail(interaction.client.user.displayAvatarURL())
-        .addFields(
-          {
-            name: "✈️ Flight Logging",
-            value: [
-              "`/log` — Log a flight with proof screenshot",
-              "`/flight add` — Manually add a flight *(staff)*",
-              "`/flight remove` — Remove a logged flight *(staff)*",
-              "`/leaderboard` — Top pilots ranked by total flights",
-              "`/stats [user]` — View pilot statistics & recent flights",
-              "`/profile [user]` — Full pilot profile card",
-            ].join("\n"),
-          },
-          {
-            name: "⭐ Reviews",
-            value: [
-              "`/review post` — Post a flight review (1–5 stars)",
-              "`/review list` — Browse all posted reviews",
-            ].join("\n"),
-          },
-          {
-            name: "🎫 Tickets",
-            value: [
-              "`/ticket open` — Open a new support ticket",
-              "`/ticket add` — Add a user or role to the ticket",
-              "`/ticket remove` — Remove a user from the ticket",
-              "`/ticket close` — Close and delete the ticket",
-            ].join("\n"),
-          },
-          {
-            name: "🛡️ Moderation *(Staff only)*",
-            value: [
-              "`/mod warn` — Issue a warning to a pilot",
-              "`/mod warnings` — View a pilot's warnings",
-              "`/mod clearwarn` — Remove a specific warning",
-              "`/mod strike` — Add a strike to a pilot",
-              "`/mod clearstrikes` — Clear all strikes",
-            ].join("\n"),
-          },
-          {
-            name: "⚙️ Utility",
-            value: "`/ping` — Bot latency\n`/help` — This menu",
-          },
-        )
-        .setFooter({ text: "AFBot • Virtual Airline | Use /ticket open for support" })
-        .setTimestamp();
+      const emoji = config.EMOJI;
+      const panel = container(COLORS.PURPLE)
+        .addTextDisplayComponents(text(`${emoji.INFO.tag} **AFBot — Command Reference**`))
+        .addSeparatorComponents(separator())
+        .addTextDisplayComponents(text(
+          "**Flight Logging**\n" +
+          "`/log` — Submit a flight log with proof\n" +
+          "`/flight add` — Manually add a flight *(staff)*\n" +
+          "`/flight remove` — Remove a logged flight *(staff)*\n" +
+          "`/leaderboard` — Top pilots by total flights\n" +
+          "`/stats [user]` — Pilot statistics\n" +
+          "`/profile [user]` — Full pilot profile"
+        ))
+        .addSeparatorComponents(separator())
+        .addTextDisplayComponents(text(
+          "**Reviews**\n`/review post` — Post a review\n`/review list` — Browse reviews"
+        ))
+        .addSeparatorComponents(separator())
+        .addTextDisplayComponents(text(
+          "**Tickets**\n`/ticket open` — Open a support ticket\n`/ticket add` — Add a user/role\n`/ticket remove` — Remove a user\n`/ticket close` — Close the ticket"
+        ))
+        .addSeparatorComponents(separator())
+        .addTextDisplayComponents(text(
+          "**Economy**\n`/economy balance` — Check your wallet\n`/economy transfer` — Send money\n`/economy transactions` — Your history\n`/economy richlist` — Wealthiest pilots"
+        ))
+        .addSeparatorComponents(separator())
+        .addTextDisplayComponents(text(
+          "**Contracts**\n`/contract list` — Available contracts\n`/contract claim` — Via button on post\n`/contract mine` — Your active contracts\n`/contract complete` — Submit completion"
+        ))
+        .addSeparatorComponents(separator())
+        .addTextDisplayComponents(text(
+          "**Tiers**\n`/tier info` — View tier programme\n`/tier buy` — Purchase a tier\n`/tier status` — Check your tier"
+        ))
+        .addSeparatorComponents(separator())
+        .addTextDisplayComponents(text(
+          "**NOTAMs**\n`/notam list` — Active NOTAMs\n`/notam post` / `expire` *(staff)*"
+        ))
+        .addSeparatorComponents(separator())
+        .addTextDisplayComponents(text(
+          "**Moderation** *(Staff only)*\n`/mod warn` · `/mod warnings` · `/mod strike` · `/mod clearstrikes`"
+        ))
+        .addSeparatorComponents(separator())
+        .addTextDisplayComponents(text("-# AFBot • Virtual Airline"));
 
-      await interaction.reply({ embeds: [embed] });
+      await interaction.reply(componentsPayload([panel]));
     },
   },
 ];

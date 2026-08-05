@@ -5,8 +5,8 @@ const path = require("path");
 const FILE = path.join(__dirname, "store.json");
 
 const defaults = {
-  flights:        {},  // userId → [{ callsign, aircraft, departure, arrival, route, proofUrl, timestamp, approved }]
-  pendingFlights: {},  // submissionId → { userId, callsign, aircraft, departure, arrival, route, proofUrl, timestamp }
+  flights:        {},
+  pendingFlights: {},
   reviews:        [],
   strikes:        {},
   warns:          {},
