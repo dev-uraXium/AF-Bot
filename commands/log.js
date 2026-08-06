@@ -125,7 +125,13 @@ module.exports = {
 
     if (config.LOG_CHANNEL) {
       const ch = await client.channels.fetch(config.LOG_CHANNEL).catch(() => null);
-      if (ch) await ch.send(componentsPayload([logContainer]));
+      if (ch) {
+        try {
+          await ch.send(componentsPayload([logContainer]));
+        } catch (err) {
+          console.error("Failed to send log message:", err);
+        }
+      }
     }
   },
 };
