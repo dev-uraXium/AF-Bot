@@ -193,7 +193,11 @@ module.exports = {
       .addStringOption(o => o.setName("id").setDescription("Contract ID").setRequired(true))
       .addUserOption(o => o.setName("pilot").setDescription("Pilot to pay").setRequired(true)))
     .addSubcommand(s => s.setName("delete").setDescription("Delete a contract. (Staff only)")
-      .addStringOption(o => o.setName("id").setDescription("Contract ID").setRequired(true))),
+      .addStringOption(o => o.setName("id").setDescription("Contract ID").setRequired(true)))
+    .addSubcommand(s => s.setName("purge").setDescription("Bulk-delete old contracts past a cutoff age. (Staff only)")
+      .addIntegerOption(o => o.setName("days").setDescription("Delete contracts created more than this many days ago").setRequired(true).setMinValue(1))
+      .addBooleanOption(o => o.setName("active_only").setDescription("Only delete inactive/expired ones, skip still-active (default: true)").setRequired(false))
+      .addBooleanOption(o => o.setName("dry_run").setDescription("Preview what would be deleted without deleting (default: false)").setRequired(false))),
 
   async execute(interaction, client) {
     const emoji = config.EMOJI;
@@ -447,6 +451,71 @@ module.exports = {
       }
       return interaction.reply(componentsPayload([
         container(COLORS.RED).addTextDisplayComponents(text(`Deleted contract **${removed.title}** (\`${removed.id}\`).`))
+      ]));
+    }
+
+    if (sub === "purge") {
+      if (!isStaff(interaction.member)) return interaction.reply(err("Staff only."));
+      const days       = interaction.options.getInteger("days");
+      const activeOnly = interaction.options.getBoolean("active_only") ?? true; // "active_only" here means "only inactive/expired ones"
+      const dryRun     = interaction.options.getBoolean("dry_run") ?? false;
+
+      const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+      const now    = Date.now();
+
+      // Refresh expiry status first so age-based filtering sees current state.
+      db.contracts.forEach(c => { if (c.expiresAt && new Date(c.expiresAt).getTime() < now) c.active = false; });
+
+      const toDelete = db.contracts.filter(c => {
+        const created = new Date(c.createdAt).getTime();
+        if (isNaN(created) || created > cutoff) return false;
+        if (activeOnly && c.active) return false; // skip still-live contracts
+        return true;
+      });
+
+      if (!toDelete.length)
+        return interaction.reply(componentsPayload(
+          [container(COLORS.GREY).addTextDisplayComponents(text(`No contracts older than ${days} day(s) match the filter.`))],
+          { ephemeral: true }
+        ));
+
+      if (dryRun) {
+        const preview = toDelete.slice(0, 15).map(c =>
+          `\`${c.id}\` **${c.title}** — ${c.active ? "Active" : "Inactive/Expired"} · Created <t:${Math.floor(new Date(c.createdAt).getTime()/1000)}:R>`
+        ).join("\n");
+        return interaction.reply(componentsPayload([
+          container(COLORS.GOLD)
+            .addTextDisplayComponents(text(`${emoji.SCROLL.tag} **Purge Preview (dry run)**`))
+            .addSeparatorComponents(separator())
+            .addTextDisplayComponents(text(`${toDelete.length} contract(s) would be deleted:\n\n${preview}${toDelete.length > 15 ? `\n…and ${toDelete.length - 15} more` : ""}`))
+        ], { ephemeral: true }));
+      }
+
+      save(db); // persist the expiry-status refresh even if something below fails
+
+      let deletedCount = 0;
+      for (const c of toDelete) {
+        const idx = db.contracts.findIndex(x => x.id === c.id);
+        if (idx === -1) continue;
+        db.contracts.splice(idx, 1);
+        deletedCount++;
+        if (c.messageId && c.messageChannelId) {
+          try {
+            const ch  = await client.channels.fetch(c.messageChannelId);
+            const msg = await ch.messages.fetch(c.messageId);
+            await msg.delete();
+          } catch {}
+        }
+      }
+      save(db);
+
+      return interaction.reply(componentsPayload([
+        container(COLORS.RED)
+          .addTextDisplayComponents(text(`${emoji.TRASH.tag} **Contracts Purged**`))
+          .addSeparatorComponents(separator())
+          .addTextDisplayComponents(text(
+            `**Cutoff**: older than ${days} day(s)\n**Filter**: ${activeOnly ? "inactive/expired only" : "all contracts (including active)"}\n**Deleted**: ${deletedCount} contract(s)`
+          ))
       ]));
     }
   },
