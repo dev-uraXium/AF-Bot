@@ -13,7 +13,6 @@ const { startExpiryWatcher, startScheduledNotams } = require("./tasks/notamSched
 const {
   isStaff, getFlights, league,
   addBalance, logTx, flightPay, CURRENCY,
-  contractMatchesFlight,
 } = require("./utils/helpers");
 const { COLORS, text, separator, container, button, row, componentsPayload } = require("./utils/components");
 
@@ -61,59 +60,45 @@ async function registerCommands() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  AUTOPAY
+//  CONTRACT PAYOUT — pays ONLY the contract ID the pilot attached
+//  to their /log submission. No auto-scanning/auto-matching.
 // ═══════════════════════════════════════════════════════════════
-async function runAutopay(client, userId, flight) {
-  const now     = Date.now();
+async function payContractOnApproval(client, userId, contractId) {
   const results = [];
+  if (!contractId) return results;
 
-  const matching = db.contracts.filter(c =>
-    c.active &&
-    c.claimedBy === userId &&
-    !c.completedBy?.includes(userId) &&
-    contractMatchesFlight(c, flight) &&
-    (!c.expiresAt || new Date(c.expiresAt).getTime() > now)
-  );
+  const c = db.contracts.find(c => c.id === contractId);
 
-  if (!matching.length) return results;
-
-  for (const c of matching) {
-    if (!c.completedBy) c.completedBy = [];
-    c.completedBy.push(userId);
-    c.claimedBy = null;
-    c.active    = false;
-
-    if (c.messageId && c.messageChannelId) {
-      try {
-        const ch  = await client.channels.fetch(c.messageChannelId);
-        const msg = await ch.messages.fetch(c.messageId);
-        await msg.edit(componentsPayload([
-          container(COLORS.GREY)
-            .addTextDisplayComponents(text(`~~**${c.title}**~~ *(Completed)*`))
-            .addSeparatorComponents(separator())
-            .addActionRowComponents(row(button(`contract_claim:${c.id}`, "Completed", ButtonStyle.Secondary, config.EMOJI.YES, true)))
-        ]));
-      } catch {}
-    }
-
-    const newBal = addBalance(userId, c.reward);
-    logTx(userId, "CONTRACT", c.reward, `Autopay: ${c.title} (${c.id})`);
-    results.push({ contract: c, newBal });
+  // Contract must exist, be active, and be claimed by this exact pilot.
+  // If any of that isn't true anymore (e.g. it expired between log and approval),
+  // we simply don't pay it — flight pay still applies separately.
+  if (!c || !c.active || c.claimedBy !== userId || c.completedBy?.includes(userId)) {
+    return results;
   }
 
+  if (!c.completedBy) c.completedBy = [];
+  c.completedBy.push(userId);
+  c.claimedBy = null;
+  c.active    = false;
+
+  if (c.messageId && c.messageChannelId) {
+    try {
+      const ch  = await client.channels.fetch(c.messageChannelId);
+      const msg = await ch.messages.fetch(c.messageId);
+      await msg.edit(componentsPayload([
+        container(COLORS.GREY)
+          .addTextDisplayComponents(text(`~~**${c.title}**~~ *(Completed)*`))
+          .addSeparatorComponents(separator())
+          .addActionRowComponents(row(button(`contract_claim:${c.id}`, "Completed", ButtonStyle.Secondary, config.EMOJI.YES, true)))
+      ]));
+    } catch {}
+  }
+
+  const newBal = addBalance(userId, c.reward);
+  logTx(userId, "CONTRACT", c.reward, `Contract paid on log approval: ${c.title} (${c.id})`);
+  results.push({ contract: c, newBal });
+
   save(db);
-
-  try {
-    const user  = await client.users.fetch(userId);
-    const lines = results.map(r => `\`${r.contract.id}\` **${r.contract.title}** · +${r.contract.reward.toLocaleString()} ${CURRENCY}`).join("\n");
-    await user.send(componentsPayload([
-      container(COLORS.GREEN)
-        .addTextDisplayComponents(text(`${config.EMOJI.YES.tag} **Contract Autopay!**`))
-        .addSeparatorComponents(separator())
-        .addTextDisplayComponents(text(`Your approved flight matched **${results.length}** contract(s)!\n\n${lines}\n\n**New Balance**: ${results.at(-1).newBal.toLocaleString()} ${CURRENCY}`))
-    ]));
-  } catch {}
-
   return results;
 }
 
@@ -224,13 +209,16 @@ client.on("interactionCreate", async (interaction) => {
       delete db.pendingFlights[payload];
       save(db);
 
-      const autopayResults = await runAutopay(client, sub.userId, entry);
+      const payoutResults = await payContractOnApproval(client, sub.userId, sub.contractId);
 
       let contractLines = "";
-      if (autopayResults.length > 0) {
-        contractLines = "\n\n**Contracts Paid**\n" + autopayResults.map(r =>
+      if (payoutResults.length > 0) {
+        contractLines = "\n\n**Contracts Paid**\n" + payoutResults.map(r =>
           `\`${r.contract.id}\` **${r.contract.title}** · +${r.contract.reward.toLocaleString()} ${CURRENCY}`
         ).join("\n");
+      } else if (sub.contractId) {
+        // Pilot attached an ID but it couldn't be paid (expired/unclaimed/already paid)
+        contractLines = `\n\n**Contract**: \`${sub.contractId}\` — not paid (no longer valid or already claimed by someone else)`;
       }
 
       const dateStr = new Date().toLocaleString("en-GB", {
@@ -263,8 +251,8 @@ client.on("interactionCreate", async (interaction) => {
 
       try {
         const pilot = await client.users.fetch(sub.userId);
-        const dmContracts = autopayResults.length > 0
-          ? "\n\n**Contracts Autopaid**\n" + autopayResults.map(r => `\`${r.contract.id}\` **${r.contract.title}** · +${r.contract.reward.toLocaleString()} ${CURRENCY}`).join("\n")
+        const dmContracts = payoutResults.length > 0
+          ? "\n\n**Contract Paid**\n" + payoutResults.map(r => `\`${r.contract.id}\` **${r.contract.title}** · +${r.contract.reward.toLocaleString()} ${CURRENCY}`).join("\n")
           : "";
         await pilot.send(componentsPayload([
           container(COLORS.GREEN)

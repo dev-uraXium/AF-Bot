@@ -24,7 +24,8 @@ module.exports = {
     .addStringOption(o => o.setName("departure").setDescription("Departure airport").setRequired(true).addChoices(...AIRPORT_CHOICES))
     .addStringOption(o => o.setName("arrival").setDescription("Arrival airport").setRequired(true).addChoices(...AIRPORT_CHOICES))
     .addStringOption(o => o.setName("route").setDescription("Waypoints (e.g. MAROG CHUMA GASKO)").setRequired(true))
-    .addAttachmentOption(o => o.setName("proof").setDescription("Screenshot proof of flight").setRequired(true)),
+    .addAttachmentOption(o => o.setName("proof").setDescription("Screenshot proof of flight").setRequired(true))
+    .addStringOption(o => o.setName("contract_id").setDescription("Contract ID this flight fulfils (optional)").setRequired(false)),
 
   async execute(interaction, client) {
     const callsign  = interaction.options.getString("callsign").toUpperCase();
@@ -33,6 +34,7 @@ module.exports = {
     const arrival    = interaction.options.getString("arrival");
     const route      = interaction.options.getString("route").toUpperCase();
     const proof       = interaction.options.getAttachment("proof");
+    const contractId   = interaction.options.getString("contract_id")?.toUpperCase().trim() || null;
 
     const emoji = config.EMOJI;
 
@@ -50,11 +52,35 @@ module.exports = {
       ));
     }
 
+    // ── Validate contract ID if the pilot attached one ────────
+    if (contractId) {
+      const c = db.contracts.find(c => c.id === contractId);
+      if (!c) {
+        return interaction.reply(componentsPayload(
+          [container(COLORS.RED).addTextDisplayComponents(text(`${emoji.NO.tag} Contract \`${contractId}\` not found. Double-check the ID and try again.`))],
+          { ephemeral: true }
+        ));
+      }
+      if (!c.active) {
+        return interaction.reply(componentsPayload(
+          [container(COLORS.RED).addTextDisplayComponents(text(`${emoji.NO.tag} Contract \`${contractId}\` is no longer active.`))],
+          { ephemeral: true }
+        ));
+      }
+      if (c.claimedBy !== interaction.user.id) {
+        return interaction.reply(componentsPayload(
+          [container(COLORS.RED).addTextDisplayComponents(text(`${emoji.NO.tag} You haven't claimed contract \`${contractId}\`. Use the Claim button first.`))],
+          { ephemeral: true }
+        ));
+      }
+    }
+
     const subId = genId();
     db.pendingFlights[subId] = {
       id: subId, userId: interaction.user.id, userTag: interaction.user.tag,
       callsign, aircraft, departure, arrival, route,
       proofUrl: proof.url, timestamp: new Date().toISOString(),
+      contractId,
     };
     save(db);
 
@@ -74,7 +100,8 @@ module.exports = {
           `**Flight Details**\n` +
           `\`Callsign\`: ${callsign}\n` +
           `\`Aircraft\`: ${aircraft}\n` +
-          `\`Brief\`: ${departure} ${emoji.ROUTE.tag} ${arrival}`
+          `\`Brief\`: ${departure} ${emoji.ROUTE.tag} ${arrival}` +
+          (contractId ? `\n\`Contract\`: ${contractId}` : "")
         )
       )
       .addSeparatorComponents(separator())

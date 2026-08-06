@@ -29,12 +29,12 @@ module.exports = {
 
     const totalPages = Math.ceil(sorted.length / perPage);
     const slice       = sorted.slice(page * perPage, page * perPage + perPage);
-    const medals       = ["🥇", "🥈", "🥉"];
+    const medals       = ["#1", "#2", "#3"];
 
     const rows = slice.map((e, i) => {
       const rank = page * perPage + i;
       const r    = league(e.count);
-      const medal = medals[rank] ?? `\`#${rank + 1}\``;
+      const medal = medals[rank] ?? `#${rank + 1}`;
       return `${medal} <@${e.uid}> — **${e.count}** flights · ${r.name}`;
     });
 

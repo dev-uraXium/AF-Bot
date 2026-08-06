@@ -116,7 +116,7 @@ module.exports = {
         container(color)
           .addTextDisplayComponents(text(`${emoji.WARNING.tag} **You Have Received a Strike**`))
           .addSeparatorComponents(separator())
-          .addTextDisplayComponents(text(`**Reason**: ${reason}\n**Strikes**: ${total}/3${total >= 3 ? "\n\n⚠️ You have reached 3 strikes. Please contact staff immediately." : ""}`))
+          .addTextDisplayComponents(text(`**Reason**: ${reason}\n**Strikes**: ${total}/3${total >= 3 ? `\n\n${emoji.WARNING.tag} You have reached 3 strikes. Please contact staff immediately.` : ""}`))
       ])).catch(() => {});
       return;
     }

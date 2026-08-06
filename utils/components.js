@@ -46,10 +46,10 @@ function separator(spacing = "small", divider = true) {
   return s;
 }
 
-function container(accentColor) {
-  const c = new ContainerBuilder();
-  if (accentColor !== undefined) c.setAccentColor(accentColor);
-  return c;
+function container() {
+  // Accent colors intentionally disabled — plain containers only, per branding.
+  // Any color argument passed by callers is ignored on purpose.
+  return new ContainerBuilder();
 }
 
 function mediaGallery(...urls) {

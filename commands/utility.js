@@ -14,7 +14,7 @@ module.exports = [
       const latency = sent.createdTimestamp - interaction.createdTimestamp;
       await interaction.editReply(componentsPayload([
         container(COLORS.PURPLE)
-          .addTextDisplayComponents(text("🏓 **Pong!**"))
+          .addTextDisplayComponents(text("**Pong!**"))
           .addSeparatorComponents(separator())
           .addTextDisplayComponents(text(`**Bot Latency**: \`${latency}ms\`\n**API Latency**: \`${Math.round(client.ws.ping)}ms\``))
       ]));

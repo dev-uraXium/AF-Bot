@@ -157,9 +157,8 @@ module.exports = {
       const rows = history.map(tx => {
         const isCredit = ["CREDIT", "TRANSFER_IN"].includes(tx.type);
         const sign = isCredit ? "+" : "-";
-        const dot  = isCredit ? "🟢" : "🔴";
         const ts   = `<t:${Math.floor(new Date(tx.timestamp).getTime()/1000)}:R>`;
-        return `${dot} \`${sign}${tx.amount.toLocaleString()} ${CURRENCY}\` — ${tx.reason} · ${ts}`;
+        return `\`${sign}${tx.amount.toLocaleString()} ${CURRENCY}\` — ${tx.reason} · ${ts}`;
       });
 
       return interaction.reply(componentsPayload([
@@ -179,8 +178,7 @@ module.exports = {
           [container(COLORS.GREY).addTextDisplayComponents(text("No balances yet."))],
           { ephemeral: true }
         ));
-      const medals = ["🥇","🥈","🥉"];
-      const rows = sorted.map(([uid, bal], i) => `${medals[i] ?? `\`#${i+1}\``} <@${uid}> — **${bal.toLocaleString()} ${CURRENCY}**`);
+      const rows = sorted.map(([uid, bal], i) => `#${i+1} <@${uid}> — **${bal.toLocaleString()} ${CURRENCY}**`);
 
       return interaction.reply(componentsPayload([
         container(COLORS.GOLD)
